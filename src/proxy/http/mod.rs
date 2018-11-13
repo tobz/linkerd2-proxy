@@ -11,8 +11,8 @@ pub mod router;
 pub mod settings;
 pub mod upgrade;
 
-pub use self::client::{Client, Error as ClientError};
-pub use self::glue::HttpBody as Body;
+pub use self::client::Client;
+pub use self::glue::{Error, HttpBody as Body};
 pub use self::settings::Settings;
 
 use svc::Either;

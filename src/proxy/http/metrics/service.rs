@@ -1,13 +1,13 @@
 use futures::{Async, Future, Poll};
 use h2;
 use http;
+use hyper;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_timer::clock;
-use tower_h2;
 
 use super::classify::{ClassifyEos, ClassifyResponse};
 use super::{ClassMetrics, Metrics, Registry, StatusMetrics};
@@ -66,7 +66,7 @@ where
 #[derive(Debug)]
 pub struct RequestBody<B, C>
 where
-    B: tower_h2::Body,
+    B: hyper::body::Payload,
     C: Hash + Eq,
 {
     metrics: Option<Arc<Mutex<Metrics<C>>>>,
@@ -76,7 +76,7 @@ where
 #[derive(Debug)]
 pub struct ResponseBody<B, C>
 where
-    B: tower_h2::Body,
+    B: hyper::body::Payload,
     C: ClassifyEos<Error = h2::Error>,
     C::Class: Hash + Eq,
 {
@@ -125,8 +125,8 @@ where
         Request = http::Request<RequestBody<A, C::Class>>,
         Response = http::Response<B>,
     >,
-    A: tower_h2::Body,
-    B: tower_h2::Body,
+    A: hyper::body::Payload,
+    B: hyper::body::Payload,
     C: ClassifyResponse<Error = h2::Error> + Clone + Default + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
@@ -170,8 +170,8 @@ where
         Request = http::Request<RequestBody<A, C::Class>>,
         Response = http::Response<B>,
     >,
-    A: tower_h2::Body,
-    B: tower_h2::Body,
+    A: hyper::body::Payload,
+    B: hyper::body::Payload,
     C: ClassifyResponse<Error = h2::Error> + Clone + Default + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
@@ -224,8 +224,8 @@ where
         Request = http::Request<RequestBody<A, C::Class>>,
         Response = http::Response<B>,
     >,
-    A: tower_h2::Body,
-    B: tower_h2::Body,
+    A: hyper::body::Payload,
+    B: hyper::body::Payload,
     C: ClassifyResponse<Error = h2::Error> + Clone + Default + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
@@ -274,7 +274,7 @@ where
 impl<C, S, B> Future for ResponseFuture<S, C>
 where
     S: svc::Service<Response = http::Response<B>>,
-    B: tower_h2::Body,
+    B: hyper::body::Payload,
     C: ClassifyResponse<Error = h2::Error> + Send + Sync + 'static,
     C::Class: Hash + Eq,
 {
@@ -303,18 +303,19 @@ where
     }
 }
 
-impl<B, C> tower_h2::Body for RequestBody<B, C>
+impl<B, C> hyper::body::Payload for RequestBody<B, C>
 where
-    B: tower_h2::Body,
-    C: Hash + Eq,
+    B: hyper::body::Payload,
+    C: Send + Hash + Eq + 'static,
 {
     type Data = B::Data;
+    type Error = B::Error;
 
     fn is_end_stream(&self) -> bool {
         self.inner.is_end_stream()
     }
 
-    fn poll_data(&mut self) -> Poll<Option<Self::Data>, h2::Error> {
+    fn poll_data(&mut self) -> Poll<Option<Self::Data>, Self::Error> {
         let frame = try_ready!(self.inner.poll_data());
 
         if let Some(lock) = self.metrics.take() {
@@ -328,14 +329,14 @@ where
         Ok(Async::Ready(frame))
     }
 
-    fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, h2::Error> {
+    fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, Self::Error> {
         self.inner.poll_trailers()
     }
 }
 
 impl<B, C> Default for ResponseBody<B, C>
 where
-    B: tower_h2::Body + Default,
+    B: hyper::body::Payload + Default,
     C: ClassifyEos<Error = h2::Error>,
     C::Class: Hash + Eq,
 {
@@ -353,7 +354,7 @@ where
 
 impl<B, C> ResponseBody<B, C>
 where
-    B: tower_h2::Body,
+    B: hyper::body::Payload,
     C: ClassifyEos<Error = h2::Error>,
     C::Class: Hash + Eq,
 {
@@ -415,19 +416,20 @@ where
     }
 }
 
-impl<B, C> tower_h2::Body for ResponseBody<B, C>
+impl<B, C> hyper::body::Payload for ResponseBody<B, C>
 where
-    B: tower_h2::Body,
-    C: ClassifyEos<Error = h2::Error>,
-    C::Class: Hash + Eq,
+    B: hyper::body::Payload<Error=h2::Error>,
+    C: ClassifyEos<Error = h2::Error> + Send + 'static,
+    C::Class: Hash + Eq + Send,
 {
     type Data = B::Data;
+    type Error = B::Error;
 
     fn is_end_stream(&self) -> bool {
         self.inner.is_end_stream()
     }
 
-    fn poll_data(&mut self) -> Poll<Option<Self::Data>, h2::Error> {
+    fn poll_data(&mut self) -> Poll<Option<Self::Data>, Self::Error> {
         let frame = try_ready!(self.inner.poll_data().map_err(|e| self.measure_err(e)));
 
         if !self.latency_recorded {
@@ -437,7 +439,7 @@ where
         Ok(Async::Ready(frame))
     }
 
-    fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, h2::Error> {
+    fn poll_trailers(&mut self) -> Poll<Option<http::HeaderMap>, Self::Error> {
         let trls = try_ready!(self.inner.poll_trailers().map_err(|e| self.measure_err(e)));
 
         if let Some(c) = self.classify.take().map(|c| c.eos(trls.as_ref())) {
@@ -450,7 +452,7 @@ where
 
 impl<B, C> Drop for ResponseBody<B, C>
 where
-    B: tower_h2::Body,
+    B: hyper::body::Payload,
     C: ClassifyEos<Error = h2::Error>,
     C::Class: Hash + Eq,
 {
