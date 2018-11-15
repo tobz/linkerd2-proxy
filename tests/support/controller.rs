@@ -212,7 +212,7 @@ fn run(controller: Controller, delay: Option<Box<Future<Item=(), Error=()> + Sen
             }
 
             let serve = bind.incoming()
-                .fold(h2, |h2, sock| {
+                .fold(h2, |mut h2, sock| {
                     if let Err(e) = sock.set_nodelay(true) {
                         return Err(e);
                     }
